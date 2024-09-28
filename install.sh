@@ -1,10 +1,10 @@
 #!/bin/sh
 set -e
 
-warning() { echo -e "\033[31m\033[01m$*\033[0m"; }
-error() { echo -e "\033[31m\033[01m$*\033[0m" && exit 1; }
-info() { echo -e "\033[32m\033[01m$*\033[0m"; }
-hint() { echo -e "\033[33m\033[01m$*\033[0m"; }
+warning() { echo -e "\033[31m\033[01m$*\033[0m"; }         # 红色
+error() { echo -e "\033[31m\033[01m$*\033[0m" && exit 1; } # 红色
+info() { echo -e "\033[32m\033[01m$*\033[0m"; }            # 绿色
+hint() { echo -e "\033[33m\033[01m$*\033[0m"; }            # 黄色
 
 if [ -z "$DOWNLOAD_HOST" ]; then
     DOWNLOAD_HOST="https://api.nyafw.com"
@@ -29,27 +29,29 @@ if [ "$PRODUCT_ARGUMENTS" = "update" ]; then
     fi
 fi
 
-#### 判断处理器架构
+# 判断处理器架构
 case $(uname -m) in
 aarch64 | arm64) ARCH=arm64 ;;
-x86_64 | amd64) ARCH=amd64 ;;
+x86_64 | amd64) [[ "$(awk -F ':' '/flags/{print $2; exit}' /proc/cpuinfo)" =~ avx2 ]] && ARCH=amd64v3 || ARCH=amd64 ;;
 *) error "cpu not supported" ;;
 esac
 
-PRODUCT="${PRODUCT_EXE}_linux_${ARCH}"
+if grep "Intel Core Processor (Broadwell)" /proc/cpuinfo >/dev/null 2>&1; then
+    ARCH=amd64
+fi
 
-#### 重复安装检查
+PRODUCT="$PRODUCT_EXE"_linux_"$ARCH"
 
+# 重复安装处理函数
 echo_uninstall() {
-    echo "rc-service $1 stop ; rc-update del $1 ; rm -rf /opt/$1 ; rm -f /etc/init.d/$1"
+    echo "rc-service $1 stop ; rc-update del $1; rm -rf /opt/$1 ; rm -f /etc/init.d/$1"
 }
 
 echo_uninstall_to_file() {
-    echo "rc-service $1 stop ; rc-update del $1 ; rm -rf /opt/$1 ; rm -f /etc/init.d/$1" >"$2"
+    echo "rc-service $1 stop ; rc-update del $1; rm -rf /opt/$1 ; rm -f /etc/init.d/$1" >"$2"
 }
 
-#### 询问用户
-
+# 询问用户
 if [ -z "$S" ]; then
     if [ -z "$BG_UPDATE" ]; then
         read -p "请输入服务名 [默认 nyanpass] : " service_name
@@ -57,16 +59,19 @@ if [ -z "$S" ]; then
         if [ -z "$service_name" ]; then
             service_name="nyanpass"
         fi
+        #
         if [ -f "/etc/init.d/${service_name}" ]; then
             hint "该服务已经存在，请先运行以下命令卸载："
             echo_uninstall "$service_name"
             exit
         fi
+        ##
         read -p "是否优化系统参数 [输入 任意内容 不优化，默认优化] : " youhua
         youhua=$(echo "$youhua" | awk '{print$1}')
         if [ -z "$youhua" ]; then
             OPTIMIZE=1
         fi
+        ##
         read -p "是否安装常用工具 [输入 任意内容 不安装，默认安装] : " azcygj
         azcygj=$(echo "$azcygj" | awk '{print$1}')
         if [ -z "$azcygj" ]; then
@@ -79,32 +84,29 @@ else
     service_name="$S"
 fi
 
-#### 检查重复对接
+# 检查重复对接
 if [ -z "$BG_UPDATE" ]; then
     nyaUUID=$(echo "$PRODUCT_ARGUMENTS" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}' || true)
     if [ -n "$nyaUUID" ]; then
-        nyaFiles=$(find /opt -name "start.sh" -exec grep -l "$nyaUUID" {} \; || true)
+        nyaFiles=$(grep -R --include "start.sh" -- "$nyaUUID" /opt || true)
         if [ -n "$nyaFiles" ]; then
             warning "检测到重复对接，会影响正常运行。参考信息如下："
             echo "$nyaFiles"
             error "请卸载上述服务，再进行对接。"
         fi
     fi
-
     mkdir -p /etc/init.d
     mkdir -p ~/.config
     mkdir -p /opt/"${service_name}"
     cd /opt/"${service_name}"
-
-    #### 安装一些常用工具
+    # 安装一些常用工具
     if [ -n "$INSTALL_TOOLS" ]; then
         apk update
         apk add --no-cache wget curl mtr iftop unzip htop net-tools bind-tools nload psmisc nano screen
     fi
 fi
 
-#### Download & unzip
-
+# Download & unzip
 rm -rf temp_backup
 mkdir -p temp_backup
 
@@ -121,12 +123,11 @@ else
     error "下载失败！"
 fi
 
-#### Install
-
+# Install
 if [ -z "$BG_UPDATE" ]; then
     rm -f start.sh
     echo 'source ./env.sh || true' >>start.sh
-    echo "./$PRODUCT_EXE $PRODUCT_ARGUMENTS" >>start.sh
+    echo './'"$PRODUCT_EXE" "$PRODUCT_ARGUMENTS" >>start.sh
 fi
 
 # 创建 OpenRC 服务文件
@@ -154,20 +155,12 @@ echo_uninstall_to_file "$service_name" "$UNINSTALL_FILE"
 info "或者："
 echo "sh $UNINSTALL_FILE"
 
-if [ -n "$BG_UPDATE" ]; then
-    if [ -n "$NYP_DOCKER" ]; then
-        kill -9 1
-    fi
-fi
-
-#### 系统参数优化
-
+# 系统参数优化
 if [ -n "$OPTIMIZE" ]; then
     info "正在优化系统参数..."
     echo '
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-
 net.ipv4.conf.all.rp_filter = 0
 net.ipv4.tcp_no_metrics_save = 1
 net.ipv4.tcp_ecn = 0
@@ -191,11 +184,11 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_max_syn_backlog = 4096
 net.core.somaxconn = 4096
 net.ipv4.tcp_abort_on_overflow = 1
-
 vm.swappiness = 10
 fs.file-max = 6553560
 ' >/etc/sysctl.conf
     sysctl -p
 fi
 
-info "当前 TCP 阻控算法: $(cat /proc/sys/net/ipv4/tcp_congestion_control)"
+# 检查 bbr
+info "当前 TCP 阻控算法: " "$(cat /proc/sys/net/ipv4/tcp_congestion_control)"
